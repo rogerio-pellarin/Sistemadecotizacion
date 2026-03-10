@@ -1,0 +1,105 @@
+A ideia é:
+
+ter uma tabela clients (dados básicos + defaults)
+
+opcionalmente client_contacts (1+ contatos, útil para proposta/envio)
+
+a cotação referencia client_id, mas congela um snapshot do nome/dados na versão publicada (para não “mudar o passado”).
+
+Abaixo vai o DDL enxuto + ajustes nas tabelas existentes.
+
+1) Tabela clients (básico e reportável)
+CREATE TABLE clients (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+
+  name VARCHAR(160) NOT NULL,              -- Nome fantasia (para UI e relatórios)
+  legal_name VARCHAR(200) NULL,            -- Razão social (opcional)
+  tax_id VARCHAR(40) NULL,                 -- NIT/CNPJ/etc (opcional)
+
+  country_code CHAR(2) NULL,               -- ISO (CO, BR, US...)
+  city VARCHAR(80) NULL,
+
+  default_language CHAR(2) NOT NULL DEFAULT 'ES',
+  default_currency CHAR(3) NOT NULL DEFAULT 'USD',
+
+  notes TEXT NULL,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_clients_tenant_name (tenant_id, name),
+  KEY idx_clients_tenant_active (tenant_id, is_active),
+  KEY idx_clients_tenant_country (tenant_id, country_code),
+  CONSTRAINT fk_clients_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+2) Contatos do cliente (opcional, mas recomendo)
+CREATE TABLE client_contacts (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  client_id BIGINT UNSIGNED NOT NULL,
+
+  name VARCHAR(160) NOT NULL,
+  email VARCHAR(160) NULL,
+  phone VARCHAR(60) NULL,
+
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY idx_contacts_client (client_id, is_primary, is_active),
+  CONSTRAINT fk_contacts_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_contacts_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+3) Ajustes na tabela quotes
+
+Como hoje você tem client_name texto, vamos evoluir sem quebrar nada:
+
+adicionar client_id
+
+manter client_name (por compatibilidade/migração)
+
+criar client_name_snapshot (para “congelar” o nome exibido na proposta quando publicar)
+
+ALTER TABLE quotes
+  ADD COLUMN client_id BIGINT UNSIGNED NULL AFTER tenant_id,
+  ADD COLUMN client_name_snapshot VARCHAR(160) NULL AFTER client_name;
+
+ALTER TABLE quotes
+  ADD KEY idx_quotes_client (tenant_id, client_id),
+  ADD CONSTRAINT fk_quotes_client FOREIGN KEY (client_id) REFERENCES clients(id);
+Regra de negócio sugerida
+
+Em DRAFT: client_id obrigatório (UI força) e client_name pode ser ignorado.
+
+Em PUBLISH/SENT: preencher client_name_snapshot (e opcionalmente legal_name/tax_id no snapshot JSON da versão).
+
+4) Versionamento: congelar dados do cliente (essencial)
+
+No quote_versions.snapshot (JSON), incluir algo assim:
+
+{
+  "client": {
+    "clientId": 123,
+    "name": "Clinica ABC",
+    "legalName": "Clinica ABC S.A.S.",
+    "taxId": "900xxx",
+    "countryCode": "CO",
+    "city": "Medellín"
+  }
+}
+
+Assim, relatórios usam client_id, mas PDFs antigos continuam consistentes.
+
+5) Impacto na UI (Wizard rápido)
+
+Campo “Cliente”:
+
+Autocomplete + botão “+ Novo cliente” (modal com: name, legal_name, tax_id, country, city)
+
+Ao selecionar cliente, preencher defaults: idioma/moeda (se você quiser).

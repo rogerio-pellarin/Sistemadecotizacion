@@ -1,0 +1,127 @@
+Hoje o modelo já tem:
+
+tenants = “workspace” (multi-tenant)
+
+users.tenant_id = usuários do workspace
+
+quotes.created_by = quem criou a cotação
+
+Mas você quer separar explicitamente:
+
+Empresa que emite a cotação (sua empresa / razão social / dados para proposta)
+
+Usuários autorizados a cotar nessa(s) empresa(s)
+
+Poder escolher qual empresa emissora em cada cotação (se houver mais de uma)
+
+A forma mais limpa é:
+
+manter tenants como “conta/workspace”
+
+criar issuing_companies (empresas emissoras) dentro do tenant
+
+cotações referenciam issuing_company_id
+
+users continuam no tenant e ganham vínculo (opcional) com empresas emissoras
+
+1) Cadastro da sua empresa (empresa emissora)
+CREATE TABLE issuing_companies (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+
+  name VARCHAR(160) NOT NULL,          -- nome fantasia
+  legal_name VARCHAR(220) NULL,        -- razão social
+  tax_id VARCHAR(60) NULL,             -- CNPJ/NIT/etc
+
+  email VARCHAR(160) NULL,
+  phone VARCHAR(60) NULL,
+  website VARCHAR(200) NULL,
+
+  address_line1 VARCHAR(200) NULL,
+  address_line2 VARCHAR(200) NULL,
+  city VARCHAR(80) NULL,
+  state VARCHAR(80) NULL,
+  country_code CHAR(2) NULL,
+  postal_code VARCHAR(20) NULL,
+
+  default_language CHAR(2) NOT NULL DEFAULT 'ES',
+  default_currency CHAR(3) NOT NULL DEFAULT 'USD',
+
+  logo_url VARCHAR(500) NULL,          -- para proposal
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_issuing_company_tenant_name (tenant_id, name),
+  KEY idx_issuing_company_tenant (tenant_id, is_active),
+  CONSTRAINT fk_issuing_company_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+Cotação aponta para a empresa emissora
+ALTER TABLE quotes
+  ADD COLUMN issuing_company_id BIGINT UNSIGNED NULL AFTER tenant_id,
+  ADD KEY idx_quotes_issuing_company (tenant_id, issuing_company_id),
+  ADD CONSTRAINT fk_quotes_issuing_company
+    FOREIGN KEY (issuing_company_id) REFERENCES issuing_companies(id);
+
+Regra: no Wizard, selecionar “Empresa emissora”. Se só existir 1, seleciona automaticamente.
+
+2) Cadastro de usuários da empresa (usuários autorizados a cotar)
+
+Você já tem users no tenant. Agora vamos adicionar vínculo por empresa emissora:
+
+CREATE TABLE issuing_company_users (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  issuing_company_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+
+  role ENUM('ADMIN','SALES','VIEWER') NOT NULL DEFAULT 'SALES',
+  can_quote TINYINT(1) NOT NULL DEFAULT 1,     -- autorização explícita
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_company_user (issuing_company_id, user_id),
+  KEY idx_company_users (tenant_id, issuing_company_id),
+  CONSTRAINT fk_ic_users_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_ic_users_company FOREIGN KEY (issuing_company_id) REFERENCES issuing_companies(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ic_users_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+3) “Quem fez a cotação” (e quem editou)
+
+quotes.created_by já resolve “quem criou”.
+
+Recomendo também guardar “última alteração”:
+
+ALTER TABLE quotes
+  ADD COLUMN updated_by BIGINT UNSIGNED NULL AFTER created_by,
+  ADD CONSTRAINT fk_quotes_updated_by FOREIGN KEY (updated_by) REFERENCES users(id);
+
+E no audit_log, sempre preencher actor_user_id (você já terá trilha completa).
+
+4) Snapshot da proposta (para não mudar o passado)
+
+Na hora de “publicar/enviar”, no quote_versions.snapshot inclua:
+
+issuingCompany { name, legal_name, tax_id, address, logo_url }
+
+createdBy { id, name, email }
+
+Assim, se você alterar dados da empresa depois, propostas antigas continuam consistentes.
+
+Resultado prático
+
+✅ Você consegue:
+
+ter 1..N empresas emissoras por workspace
+
+escolher no Wizard qual empresa está cotando
+
+restringir quem pode cotar por empresa
+
+saber exatamente qual usuário criou/editou/públicou a cotação
+
+gerar proposta com dados corretos da empresa emissora
